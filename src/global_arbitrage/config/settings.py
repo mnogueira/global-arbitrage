@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     mt5_magic_number: int = 431000
     mt5_deviation: int = 20
     ib_host: str = "127.0.0.1"
-    ib_port: int = 7497
+    ib_port: int = 4002
     ib_client_id: int = 17
     ib_account: str | None = None
     ib_readonly: bool = False

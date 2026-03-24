@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from math import ceil, isfinite
 from typing import Any
@@ -13,8 +14,13 @@ from global_arbitrage.core.models import MarketQuote
 
 
 def _parse_time_window(value: str) -> timedelta:
-    amount = int(value[:-1])
-    unit = value[-1].lower()
+    cleaned = value.strip().lower()
+    if cleaned.endswith("mo"):
+        amount = int(cleaned[:-2])
+        unit = "mo"
+    else:
+        amount = int(cleaned[:-1])
+        unit = cleaned[-1]
     if unit == "m":
         return timedelta(minutes=amount)
     if unit == "h":
@@ -23,6 +29,8 @@ def _parse_time_window(value: str) -> timedelta:
         return timedelta(days=amount)
     if unit == "w":
         return timedelta(weeks=amount)
+    if unit == "mo":
+        return timedelta(days=30 * amount)
     if unit == "y":
         return timedelta(days=365 * amount)
     raise ValueError(f"Unsupported time value '{value}'.")
@@ -44,6 +52,14 @@ def _first_finite(*values: object) -> float | None:
     return None
 
 
+def _first_positive_price(*values: object) -> float | None:
+    for value in values:
+        resolved = _first_finite(value)
+        if resolved is not None and resolved > 0.0:
+            return resolved
+    return None
+
+
 class MT5Connector(MarketDataConnector):
     """Live quote and history adapter backed by MetaTrader 5."""
 
@@ -58,6 +74,8 @@ class MT5Connector(MarketDataConnector):
         mt5_path: str | None = None,
         default_currency: str = "BRL",
         symbol_aliases: dict[str, str] | None = None,
+        quote_poll_attempts: int = 3,
+        quote_poll_interval_seconds: float = 0.2,
     ):
         self.login = login
         self.password = password
@@ -65,6 +83,8 @@ class MT5Connector(MarketDataConnector):
         self.mt5_path = mt5_path
         self.default_currency = default_currency
         self.symbol_aliases = dict(symbol_aliases or {})
+        self.quote_poll_attempts = max(1, int(quote_poll_attempts))
+        self.quote_poll_interval_seconds = max(0.0, float(quote_poll_interval_seconds))
         self._mt5: Any | None = None
 
     def connect(self) -> None:
@@ -90,24 +110,40 @@ class MT5Connector(MarketDataConnector):
     def latest_quote(self, symbol: str, *, currency: str | None = None) -> MarketQuote:
         mt5 = self._require_mt5()
         resolved_symbol = self.resolve_symbol(symbol)
-        self._ensure_symbol(resolved_symbol)
-        info = mt5.symbol_info(resolved_symbol)
-        tick = mt5.symbol_info_tick(resolved_symbol)
-        if info is None or tick is None:
-            raise RuntimeError(f"MT5 quote unavailable for '{resolved_symbol}'.")
-        bid = _first_finite(getattr(tick, "bid", None))
-        ask = _first_finite(getattr(tick, "ask", None))
-        midpoint = None if bid is None or ask is None else (bid + ask) / 2.0
-        last = _first_finite(getattr(tick, "last", None), midpoint, getattr(info, "last", None))
-        if last is None:
-            raise RuntimeError(f"MT5 returned no usable price fields for '{resolved_symbol}'.")
-        timestamp_value = getattr(tick, "time_msc", None)
-        if timestamp_value not in {None, 0}:
-            timestamp = pd.Timestamp(int(timestamp_value), unit="ms", tz="UTC").tz_localize(None)
-        else:
-            timestamp = pd.Timestamp(int(getattr(tick, "time", 0)), unit="s", tz="UTC").tz_localize(
-                None
+        info = self._ensure_symbol(resolved_symbol)
+        tick = None
+        recent_bar_close = None
+        recent_bar_timestamp = None
+        for attempt in range(self.quote_poll_attempts):
+            info = mt5.symbol_info(resolved_symbol)
+            tick = mt5.symbol_info_tick(resolved_symbol)
+            bid = _first_positive_price(
+                None if tick is None else getattr(tick, "bid", None),
+                None if info is None else getattr(info, "bid", None),
             )
+            ask = _first_positive_price(
+                None if tick is None else getattr(tick, "ask", None),
+                None if info is None else getattr(info, "ask", None),
+            )
+            midpoint = None if bid is None or ask is None else (bid + ask) / 2.0
+            recent_bar_close, recent_bar_timestamp = self._recent_bar_snapshot(resolved_symbol)
+            last = _first_positive_price(
+                None if tick is None else getattr(tick, "last", None),
+                midpoint,
+                None if info is None else getattr(info, "last", None),
+                recent_bar_close,
+            )
+            if last is not None:
+                break
+            if attempt + 1 < self.quote_poll_attempts and self.quote_poll_interval_seconds > 0.0:
+                time.sleep(self.quote_poll_interval_seconds)
+        else:
+            raise RuntimeError(f"MT5 returned no usable price fields for '{resolved_symbol}'.")
+        timestamp = self._resolve_timestamp(
+            tick=tick,
+            info=info,
+            fallback=recent_bar_timestamp,
+        )
         resolved_currency = (
             currency
             or str(getattr(info, "currency_profit", "") or getattr(info, "currency_base", ""))
@@ -150,13 +186,56 @@ class MT5Connector(MarketDataConnector):
     def resolve_symbol(self, symbol: str) -> str:
         return self.symbol_aliases.get(symbol, symbol)
 
-    def _ensure_symbol(self, symbol: str) -> None:
+    def _ensure_symbol(self, symbol: str):
         mt5 = self._require_mt5()
         info = mt5.symbol_info(symbol)
         if info is None:
             raise ValueError(f"MT5 symbol '{symbol}' was not found.")
         if not info.visible:
-            mt5.symbol_select(symbol, True)
+            if not mt5.symbol_select(symbol, True):
+                raise ValueError(f"MT5 symbol '{symbol}' could not be selected: {mt5.last_error()}")
+            info = mt5.symbol_info(symbol)
+            if info is None:
+                raise ValueError(f"MT5 symbol '{symbol}' disappeared after selection.")
+        return info
+
+    def _recent_bar_snapshot(self, symbol: str) -> tuple[float | None, pd.Timestamp | None]:
+        mt5 = self._require_mt5()
+        for timeframe in (mt5.TIMEFRAME_M1, mt5.TIMEFRAME_D1):
+            payload = mt5.copy_rates_from_pos(symbol, timeframe, 0, 1)
+            if payload is None or len(payload) == 0:
+                continue
+            row = payload[-1]
+            close = row["close"] if hasattr(row, "__getitem__") else getattr(row, "close", None)
+            resolved_close = _first_positive_price(close)
+            if resolved_close is None:
+                continue
+            raw_time = row["time"] if hasattr(row, "__getitem__") else getattr(row, "time", None)
+            timestamp = None
+            if raw_time not in {None, 0}:
+                timestamp = pd.Timestamp(int(raw_time), unit="s", tz="UTC").tz_localize(None)
+            return resolved_close, timestamp
+        return None, None
+
+    @staticmethod
+    def _resolve_timestamp(
+        *,
+        tick: Any | None,
+        info: Any | None,
+        fallback: pd.Timestamp | None,
+    ) -> pd.Timestamp:
+        timestamp_value = None if tick is None else getattr(tick, "time_msc", None)
+        if timestamp_value not in {None, 0}:
+            return pd.Timestamp(int(timestamp_value), unit="ms", tz="UTC").tz_localize(None)
+        timestamp_value = None if tick is None else getattr(tick, "time", None)
+        if timestamp_value not in {None, 0}:
+            return pd.Timestamp(int(timestamp_value), unit="s", tz="UTC").tz_localize(None)
+        timestamp_value = None if info is None else getattr(info, "time", None)
+        if timestamp_value not in {None, 0}:
+            return pd.Timestamp(int(timestamp_value), unit="s", tz="UTC").tz_localize(None)
+        if fallback is not None:
+            return fallback
+        return pd.Timestamp.utcnow().tz_localize(None)
 
     def _require_mt5(self):
         if self._mt5 is None:

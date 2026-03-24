@@ -97,6 +97,38 @@ class FakeIB:
         return None
 
 
+class EmptyTicker:
+    bid = None
+    ask = None
+    last = None
+    close = None
+    time = pd.Timestamp("2026-03-24 14:00:00")
+
+    def marketPrice(self) -> float:
+        return float("nan")
+
+
+class DelayedFallbackIB(FakeIB):
+    def __init__(self) -> None:
+        super().__init__()
+        self.market_data_type = 1
+        self.market_data_type_history: list[int] = []
+
+    def reqMarketDataType(self, value: int) -> None:
+        self.market_data_type = value
+        self.market_data_type_history.append(value)
+
+    def reqMktData(self, contract, *args):
+        if self.market_data_type == 3:
+            return FakeTicker()
+        return EmptyTicker()
+
+    def reqTickers(self, contract):
+        if self.market_data_type == 3:
+            return [FakeTicker()]
+        return [EmptyTicker()]
+
+
 class FakeModule:
     IB = FakeIB
     Contract = SimpleNamespace
@@ -106,6 +138,10 @@ class FakeModule:
         def __init__(self, side: str, quantity: float):
             self.action = side
             self.totalQuantity = quantity
+
+
+class DelayedFallbackModule(FakeModule):
+    IB = DelayedFallbackIB
 
 
 def test_ib_connector_supports_quotes_history_orders_and_account_state() -> None:
@@ -128,3 +164,17 @@ def test_ib_connector_supports_quotes_history_orders_and_account_state() -> None
     assert positions[0].symbol == "EWZ"
     assert snapshot.equity == 10000.0
     assert snapshot.currency == "USD"
+
+
+def test_ib_connector_falls_back_to_delayed_market_data_when_live_quote_is_unavailable() -> None:
+    connector = InteractiveBrokersConnector(
+        contract_overrides={"EWZ": IBContractSpec(symbol="EWZ", sec_type="STK", exchange="SMART", currency="USD")}
+    )
+    connector._module = DelayedFallbackModule()  # type: ignore[assignment]
+
+    quote = connector.latest_quote("EWZ")
+
+    assert round(quote.mid, 2) == 20.0
+    assert quote.metadata["requested_market_data_type"] == 1
+    assert quote.metadata["market_data_type"] == 3
+    assert connector._effective_market_data_type == 3

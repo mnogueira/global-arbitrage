@@ -98,7 +98,7 @@ The paper engine keeps synthetic pair P&L locally and can now route mirrored leg
 
 IB setup:
 
-- Run IB Gateway paper trading on `127.0.0.1:7497`
+- Run IB Gateway paper trading on `127.0.0.1:4002`
 - Enable socket/API access
 - Make sure the account has the market-data subscriptions you need for live ADR and ETF quotes
 

@@ -23,12 +23,9 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
     """Instantiate strategy objects from the YAML config."""
 
     settings = Settings()
-    yahoo = YahooFinanceConnector()
-    fx = BcbPtaxConnector(yahoo=yahoo)
-    binance = BinanceSpotConnector()
-    bitso = BitsoConnector()
     strategy_block = config.get("strategies", {})
     ib_config = config.get("brokers", {}).get("ib", {})
+    mt5_config = config.get("brokers", {}).get("mt5", {})
     mt5 = MT5Connector(
         login=settings.mt5_login,
         password=settings.mt5_password,
@@ -47,6 +44,16 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
         market_data_type=int(ib_config.get("market_data_type", settings.ib_market_data_type)),
         contract_overrides=_build_ib_contract_overrides(config),
     )
+    yahoo = YahooFinanceConnector()
+    fx = BcbPtaxConnector(
+        yahoo=yahoo,
+        market=mt5,
+        market_symbol=str(mt5_config.get("fx_proxy_symbol", "WDO$N")),
+        market_scale=float(mt5_config.get("fx_proxy_scale", 1000.0)),
+        prefer_market_proxy=bool(mt5_config.get("prefer_fx_proxy", True)),
+    )
+    binance = BinanceSpotConnector()
+    bitso = BitsoConnector()
     strategies: list[ArbitrageStrategy] = []
     notional_brl = float(config.get("scanner", {}).get("default_notional_brl", 100000.0))
 

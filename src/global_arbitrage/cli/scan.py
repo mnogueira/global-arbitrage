@@ -34,6 +34,10 @@ def main() -> None:
     for index in range(args.iterations):
         observations = scanner.run_once(strategy_ids=strategy_ids)
         console.print(build_observations_table(observations))
+        for error in scanner.last_errors:
+            console.print(
+                f"[yellow]{error.strategy_id} skipped: {error.error_type}: {error.message}[/yellow]"
+            )
         if index + 1 < args.iterations:
             time.sleep(args.sleep_seconds)
 

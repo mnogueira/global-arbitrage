@@ -116,7 +116,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self,
         *,
         host: str = "127.0.0.1",
-        port: int = 7497,
+        port: int = 4002,
         client_id: int = 17,
         timeout: float = 4.0,
         readonly: bool = False,
@@ -125,6 +125,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         market_data_type: int = 1,
         quote_wait_seconds: float = 1.0,
         order_wait_seconds: float = 5.0,
+        client_id_retry_span: int = 5,
         contract_overrides: dict[str, IBContractSpec] | None = None,
     ):
         self.host = host
@@ -137,26 +138,44 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self.market_data_type = market_data_type
         self.quote_wait_seconds = quote_wait_seconds
         self.order_wait_seconds = order_wait_seconds
+        self.client_id_retry_span = max(1, int(client_id_retry_span))
         self.contract_overrides = dict(contract_overrides or {})
         self._module: Any | None = None
         self._ib: Any | None = None
         self._contracts: dict[str, Any] = {}
         self._tickers: dict[str, Any] = {}
+        self._effective_market_data_type = market_data_type
+        self._active_client_id = client_id
 
     def connect(self) -> None:
         module = self._require_module()
-        ib = module.IB()
-        ib.connect(
-            self.host,
-            self.port,
-            clientId=self.client_id,
-            timeout=self.timeout,
-            readonly=self.readonly,
-            account=self.account or "",
-        )
-        if self.market_data_type:
-            ib.reqMarketDataType(self.market_data_type)
-        self._ib = ib
+        last_error: Exception | None = None
+        for offset in range(self.client_id_retry_span):
+            ib = module.IB()
+            candidate_client_id = self.client_id + offset
+            try:
+                ib.connect(
+                    self.host,
+                    self.port,
+                    clientId=candidate_client_id,
+                    timeout=self.timeout,
+                    readonly=self.readonly,
+                    account=self.account or "",
+                )
+                self._effective_market_data_type = self.market_data_type
+                if self._effective_market_data_type:
+                    ib.reqMarketDataType(self._effective_market_data_type)
+                self._active_client_id = candidate_client_id
+                self._ib = ib
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    ib.disconnect()
+                except Exception:
+                    pass
+        if last_error is not None:
+            raise last_error
 
     def disconnect(self) -> None:
         if self._ib is not None:
@@ -164,6 +183,8 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self._ib = None
         self._contracts.clear()
         self._tickers.clear()
+        self._effective_market_data_type = self.market_data_type
+        self._active_client_id = self.client_id
 
     def register_contract(self, alias: str, spec: IBContractSpec) -> None:
         self.contract_overrides[alias] = spec
@@ -173,12 +194,9 @@ class InteractiveBrokersConnector(MarketDataConnector):
     def latest_quote(self, symbol: str, *, currency: str | None = None) -> MarketQuote:
         ib = self._require_ib()
         contract = self._qualify_contract(symbol)
-        ticker = self._tickers.get(symbol)
-        if ticker is None:
-            ticker = ib.reqMktData(contract, "", False, False)
-            self._tickers[symbol] = ticker
-            if self.quote_wait_seconds > 0.0:
-                ib.sleep(self.quote_wait_seconds)
+        ticker = self._request_streaming_ticker(symbol, contract)
+        if not self._ticker_has_price(ticker) and self._enable_delayed_market_data():
+            ticker = self._request_streaming_ticker(symbol, contract, force_refresh=True)
         if not self._ticker_has_price(ticker):
             snapshots = ib.reqTickers(contract)
             if snapshots:
@@ -203,7 +221,8 @@ class InteractiveBrokersConnector(MarketDataConnector):
             metadata={
                 "contract_symbol": str(getattr(contract, "symbol", symbol)),
                 "contract_exchange": str(getattr(contract, "exchange", "")),
-                "market_data_type": self.market_data_type,
+                "requested_market_data_type": self.market_data_type,
+                "market_data_type": self._effective_market_data_type,
             },
         )
 
@@ -317,6 +336,25 @@ class InteractiveBrokersConnector(MarketDataConnector):
         ib = self._require_ib()
         accounts = ib.managedAccounts()
         return None if not accounts else str(accounts[0])
+
+    def _request_streaming_ticker(self, symbol: str, contract: Any, *, force_refresh: bool = False):
+        ib = self._require_ib()
+        ticker = None if force_refresh else self._tickers.get(symbol)
+        if ticker is None:
+            ticker = ib.reqMktData(contract, "", False, False)
+            self._tickers[symbol] = ticker
+            if self.quote_wait_seconds > 0.0:
+                ib.sleep(self.quote_wait_seconds)
+        return ticker
+
+    def _enable_delayed_market_data(self) -> bool:
+        if self._effective_market_data_type in {3, 4}:
+            return False
+        ib = self._require_ib()
+        ib.reqMarketDataType(3)
+        self._effective_market_data_type = 3
+        self._tickers.clear()
+        return True
 
     def _qualify_contract(self, symbol: str):
         cached = self._contracts.get(symbol)
