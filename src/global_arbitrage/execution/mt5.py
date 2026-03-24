@@ -1,34 +1,23 @@
-"""Minimal MT5 broker adapter for optional demo mirroring."""
+"""MetaTrader 5 execution adapter with live account and position snapshots."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
+import pandas as pd
 
-class OrderSide(StrEnum):
-    """Canonical order side."""
-
-    BUY = "BUY"
-    SELL = "SELL"
-
-
-@dataclass(frozen=True, slots=True)
-class OrderReceipt:
-    """Normalized MT5 order acknowledgement."""
-
-    symbol: str
-    side: str
-    quantity: float
-    status: str
-    order_id: str | None = None
-    filled_price: float | None = None
-    message: str | None = None
+from global_arbitrage.execution.broker import (
+    BrokerAccountSnapshot,
+    BrokerPosition,
+    OrderReceipt,
+    OrderSide,
+)
 
 
 class MT5ExecutionBroker:
     """MetaTrader 5 market-order adapter."""
+
+    venue = "mt5"
 
     def __init__(
         self,
@@ -72,6 +61,8 @@ class MT5ExecutionBroker:
         mt5 = self._require_mt5()
         symbol = self.validate_symbol(symbol)
         symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            raise ValueError(f"MT5 symbol '{symbol}' could not be loaded.")
         if not symbol_info.visible:
             mt5.symbol_select(symbol, True)
         tick = mt5.symbol_info_tick(symbol)
@@ -98,9 +89,59 @@ class MT5ExecutionBroker:
             side=side.value,
             quantity=float(quantity),
             status=status,
+            venue=self.venue,
             order_id=None if getattr(result, "order", 0) == 0 else str(result.order),
             filled_price=None if getattr(result, "price", 0.0) in {None, 0.0} else float(result.price),
             message=str(getattr(result, "comment", "")),
+            metadata={"retcode": int(getattr(result, "retcode", 0))},
+        )
+
+    def positions(self) -> list[BrokerPosition]:
+        mt5 = self._require_mt5()
+        payload = mt5.positions_get()
+        if payload is None:
+            return []
+        positions: list[BrokerPosition] = []
+        for row in payload:
+            positions.append(
+                BrokerPosition(
+                    venue=self.venue,
+                    symbol=str(row.symbol),
+                    quantity=float(row.volume),
+                    currency=str(getattr(row, "currency", "") or getattr(row, "currency_profit", "BRL")),
+                    average_price=float(getattr(row, "price_open", 0.0) or 0.0),
+                    market_price=float(getattr(row, "price_current", 0.0) or 0.0),
+                    market_value=None,
+                    unrealized_pnl=float(getattr(row, "profit", 0.0) or 0.0),
+                    realized_pnl=None,
+                    metadata={
+                        "ticket": int(getattr(row, "ticket", 0)),
+                        "type": int(getattr(row, "type", 0)),
+                    },
+                )
+            )
+        return positions
+
+    def account_snapshot(self) -> BrokerAccountSnapshot:
+        mt5 = self._require_mt5()
+        info = mt5.account_info()
+        if info is None:
+            raise RuntimeError("MT5 account_info() returned None.")
+        return BrokerAccountSnapshot(
+            venue=self.venue,
+            account_id=None if getattr(info, "login", None) is None else str(info.login),
+            currency=str(getattr(info, "currency", "BRL")),
+            timestamp=pd.Timestamp.utcnow().tz_localize(None),
+            balance=float(getattr(info, "balance", 0.0) or 0.0),
+            equity=float(getattr(info, "equity", 0.0) or 0.0),
+            available_funds=float(getattr(info, "margin_free", 0.0) or 0.0),
+            buying_power=None,
+            unrealized_pnl=float(getattr(info, "profit", 0.0) or 0.0),
+            realized_pnl=None,
+            metadata={
+                "margin": float(getattr(info, "margin", 0.0) or 0.0),
+                "margin_level": float(getattr(info, "margin_level", 0.0) or 0.0),
+            },
         )
 
     def validate_symbol(self, symbol: str) -> str:
@@ -136,5 +177,5 @@ class MT5ExecutionBroker:
             return mt5
         except ImportError as exc:
             raise ImportError(
-                "MetaTrader5 package is required for MT5 mirroring. Install with: uv sync --extra mt5"
+                "MetaTrader5 package is required for MT5 integration. Install with: uv sync --extra mt5"
             ) from exc

@@ -10,6 +10,7 @@ authors = [{ name = "Marcelo Nogueira" }]
 dependencies = [
     "beautifulsoup4>=4.12",
     "duckdb>=1.1",
+    "ib_async>=2.0.1",
     "numpy>=1.26",
     "pandas>=2.2",
     "pydantic>=2.7",

@@ -10,18 +10,21 @@ The project is built around a simple thesis:
 
 ## Current Focus
 
-The first release concentrates on three strategies that are both actionable and testable with public data plus an MT5 demo account:
+The first release concentrates on three strategies that are actionable with MT5 plus IB Gateway paper trading:
 
 1. `ADR parity`
-   Compare Brazilian cash equities with their U.S. ADRs after FX and ADR ratios.
-   Initial pairs: `PETR4/PBR-A`, `VALE3/VALE`, `ITUB4/ITUB`, `BBDC4/BBD`.
+   Compare Brazilian cash equities from MT5 with their U.S. ADRs from Interactive Brokers after FX and ADR ratios.
+   Initial pairs: `PETR4/PBR`, `VALE3/VALE`, `ITUB4/ITUB`, `BBDC4/BBD`.
 
 2. `EWZ / BOVA11 / Brazil beta dislocation`
-   Translate `EWZ` into BRL, estimate a rolling fair-value anchor for `BOVA11`, and trade large deviations.
+   Translate `EWZ` from Interactive Brokers into BRL, estimate a rolling fair-value anchor for `BOVA11`, and trade large deviations against MT5.
    This is not pure mechanical arbitrage, but it is a practical session-overlap relative-value setup.
 
 3. `Crypto implied-FX arbitrage`
    Compare `BTC/BRL` with `BTC/USD * USD/BRL`, then layer optional LatAm venue checks such as `BTC/MXN` and `BTC/ARS`.
+
+4. `Cross-market futures bridges`
+   Add IB-enabled scanners for `Brent vs WDO` and `U.S. Treasuries vs DI futures`, with rolling hedge-ratio anchoring.
 
 ## Why These First
 
@@ -58,6 +61,7 @@ tests/                   Unit tests for spread and signal logic
 uv sync
 uv sync --extra dev
 uv sync --extra mt5   # optional, only if you want MT5 integration
+pip install ib_async  # required for Interactive Brokers / IB Gateway
 ```
 
 Run one scanner pass:
@@ -88,14 +92,27 @@ The short version:
 - `BTC/BRL vs BTC/USD*FX` is the best 24/7 public-api arbitrage monitor.
 - `WDO/DOL/DI1/oil crossovers` are important, but more sensitive to contract specifics and broker access.
 
-## MT5 Demo Execution
+## MT5 + IB Paper Execution
 
-MT5 in this repo is treated as an execution sandbox, not proof that multi-leg live arbitrage is solved.
-The paper engine keeps the synthetic pair P&L locally and can optionally mirror a selected leg to MT5 when:
+The paper engine keeps synthetic pair P&L locally and can now route mirrored legs to MT5 and IB based on the strategy instrument map.
+
+IB setup:
+
+- Run IB Gateway paper trading on `127.0.0.1:7497`
+- Enable socket/API access
+- Make sure the account has the market-data subscriptions you need for live ADR and ETF quotes
+
+MT5 is still used for the Brazil leg when:
 
 - the broker exposes the symbol,
 - the demo account is connected,
 - the user supplies symbol mappings and order sizing.
+
+Run paper routing with both brokers enabled:
+
+```bash
+python scripts/paper.py --config configs/default.yaml --mirror-to-mt5 --mt5-order-quantity 100 --mirror-to-ib --ib-order-quantity 100
+```
 
 ## Realism Checklist
 

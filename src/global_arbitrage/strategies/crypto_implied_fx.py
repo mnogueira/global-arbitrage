@@ -122,6 +122,7 @@ class CryptoImpliedFxStrategy(ArbitrageStrategy):
                 direction=local_direction,
                 weight=1.0,
                 broker_symbol=self.mt5_symbol,
+                broker_venue="mt5" if self.mt5_symbol else None,
             ),
             TradeLeg(
                 instrument_id=f"synthetic:{self.usd_symbol}:translated",

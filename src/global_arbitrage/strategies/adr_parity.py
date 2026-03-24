@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from global_arbitrage.connectors.base import MarketDataConnector
 from global_arbitrage.connectors.fx import BcbPtaxConnector
-from global_arbitrage.connectors.yahoo import YahooFinanceConnector
 from global_arbitrage.core.costs import CostAssumptions, classify_edge, signed_net_edge_bps
 from global_arbitrage.core.models import StrategyObservation, TradeLeg
 from global_arbitrage.core.utils import signal_from_edge, spread_bps_from_ratio
@@ -23,7 +23,8 @@ class ADRParityStrategy(ArbitrageStrategy):
     adr_symbol: str
     local_name: str
     shares_per_adr: float
-    yahoo: YahooFinanceConnector
+    local_market: MarketDataConnector
+    adr_market: MarketDataConnector
     fx: BcbPtaxConnector
     costs: CostAssumptions
     open_threshold_bps: float
@@ -31,14 +32,17 @@ class ADRParityStrategy(ArbitrageStrategy):
     max_holding_bars: int
     capital_required_brl: float
     mt5_symbol: str | None = None
+    ib_symbol: str | None = None
+    local_market_symbol: str | None = None
+    adr_market_symbol: str | None = None
 
     @property
     def strategy_name(self) -> str:
         return f"ADR parity: {self.local_symbol} vs {self.adr_symbol}"
 
     def refresh(self) -> StrategyObservation:
-        local_quote = self.yahoo.latest_quote(self.local_symbol, currency="BRL")
-        adr_quote = self.yahoo.latest_quote(self.adr_symbol, currency="USD")
+        local_quote = self.local_market.latest_quote(self._resolved_local_market_symbol, currency="BRL")
+        adr_quote = self.adr_market.latest_quote(self._resolved_adr_market_symbol, currency="USD")
         fx_quote = self.fx.latest_usdbrl()
         implied_local = adr_quote.mid * fx_quote.mid / self.shares_per_adr
         return self._build_observation(
@@ -50,15 +54,28 @@ class ADRParityStrategy(ArbitrageStrategy):
                 "adr_symbol": self.adr_symbol,
                 "shares_per_adr": self.shares_per_adr,
                 "fx_usdbrl": fx_quote.mid,
-                "local_quote": local_quote.mid,
+                "local_quote_brl": local_quote.mid,
                 "adr_quote_usd": adr_quote.mid,
+                "local_market_symbol": self._resolved_local_market_symbol,
+                "adr_market_symbol": self._resolved_adr_market_symbol,
                 "mt5_symbol": self.mt5_symbol,
+                "ib_symbol": self.ib_symbol,
             },
         )
 
     def history(self, *, period: str = "2y", interval: str = "1d") -> list[StrategyObservation]:
-        local_history = self.yahoo.history(self.local_symbol, period=period, interval=interval)
-        adr_history = self.yahoo.history(self.adr_symbol, period=period, interval=interval)
+        local_history = self.local_market.history(
+            self._resolved_local_market_symbol,
+            period=period,
+            interval=interval,
+            currency="BRL",
+        )
+        adr_history = self.adr_market.history(
+            self._resolved_adr_market_symbol,
+            period=period,
+            interval=interval,
+            currency="USD",
+        )
         fx_history = self.fx.history_usdbrl(period=period, interval=interval)
         joined = pd.concat(
             [
@@ -83,13 +100,24 @@ class ADRParityStrategy(ArbitrageStrategy):
                         "adr_symbol": self.adr_symbol,
                         "shares_per_adr": self.shares_per_adr,
                         "fx_usdbrl": float(row["fx"]),
-                        "local_quote": float(row["local"]),
+                        "local_quote_brl": float(row["local"]),
                         "adr_quote_usd": float(row["adr"]),
+                        "local_market_symbol": self._resolved_local_market_symbol,
+                        "adr_market_symbol": self._resolved_adr_market_symbol,
                         "mt5_symbol": self.mt5_symbol,
+                        "ib_symbol": self.ib_symbol,
                     },
                 )
             )
         return observations
+
+    @property
+    def _resolved_local_market_symbol(self) -> str:
+        return self.local_market_symbol or self.mt5_symbol or self.local_symbol
+
+    @property
+    def _resolved_adr_market_symbol(self) -> str:
+        return self.adr_market_symbol or self.ib_symbol or self.adr_symbol
 
     def _build_observation(
         self,
@@ -118,6 +146,8 @@ class ADRParityStrategy(ArbitrageStrategy):
                 direction=local_direction,
                 weight=1.0,
                 broker_symbol=self.mt5_symbol,
+                broker_venue="mt5" if self.mt5_symbol else None,
+                order_quantity_multiplier=self.shares_per_adr,
             ),
             TradeLeg(
                 instrument_id=f"synthetic:{self.adr_symbol}:translated",
@@ -126,6 +156,9 @@ class ADRParityStrategy(ArbitrageStrategy):
                 currency="BRL",
                 direction=-local_direction,
                 weight=1.0,
+                broker_symbol=self.ib_symbol,
+                broker_venue="ib" if self.ib_symbol else None,
+                order_quantity_multiplier=1.0,
             ),
         )
         return StrategyObservation(

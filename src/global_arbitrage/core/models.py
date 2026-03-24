@@ -59,6 +59,8 @@ class TradeLeg:
     direction: int
     weight: float = 1.0
     broker_symbol: str | None = None
+    broker_venue: str | None = None
+    order_quantity_multiplier: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -125,6 +127,8 @@ class StrategyObservation:
                     "direction": leg.direction,
                     "weight": leg.weight,
                     "broker_symbol": leg.broker_symbol,
+                    "broker_venue": leg.broker_venue,
+                    "order_quantity_multiplier": leg.order_quantity_multiplier,
                     "metadata": leg.metadata,
                 }
                 for leg in self.trade_legs

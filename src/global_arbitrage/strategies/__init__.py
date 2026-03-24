@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from global_arbitrage.config.settings import Settings
 from global_arbitrage.connectors.binance import BinanceSpotConnector
 from global_arbitrage.connectors.bitso import BitsoConnector
 from global_arbitrage.connectors.fx import BcbPtaxConnector
+from global_arbitrage.connectors.ib import IBContractSpec, InteractiveBrokersConnector
+from global_arbitrage.connectors.mt5 import MT5Connector
 from global_arbitrage.connectors.yahoo import YahooFinanceConnector
 from global_arbitrage.core.costs import CostAssumptions
 from global_arbitrage.strategies.adr_parity import ADRParityStrategy
 from global_arbitrage.strategies.base import ArbitrageStrategy
+from global_arbitrage.strategies.bridge import HedgeRatioBridgeStrategy
 from global_arbitrage.strategies.crypto_implied_fx import CryptoImpliedFxStrategy
 from global_arbitrage.strategies.ewz_leadlag import EwzBovaBridgeStrategy
 
@@ -18,12 +22,32 @@ from global_arbitrage.strategies.ewz_leadlag import EwzBovaBridgeStrategy
 def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
     """Instantiate strategy objects from the YAML config."""
 
+    settings = Settings()
     yahoo = YahooFinanceConnector()
     fx = BcbPtaxConnector(yahoo=yahoo)
     binance = BinanceSpotConnector()
     bitso = BitsoConnector()
-    strategies: list[ArbitrageStrategy] = []
     strategy_block = config.get("strategies", {})
+    ib_config = config.get("brokers", {}).get("ib", {})
+    mt5 = MT5Connector(
+        login=settings.mt5_login,
+        password=settings.mt5_password,
+        server=settings.mt5_server,
+        mt5_path=settings.mt5_path,
+        symbol_aliases=_build_mt5_symbol_aliases(strategy_block),
+    )
+    ib = InteractiveBrokersConnector(
+        host=str(ib_config.get("host", settings.ib_host)),
+        port=int(ib_config.get("port", settings.ib_port)),
+        client_id=int(ib_config.get("client_id", settings.ib_client_id)),
+        timeout=float(ib_config.get("timeout_seconds", settings.ib_timeout_seconds)),
+        readonly=bool(ib_config.get("readonly", settings.ib_readonly)),
+        account=ib_config.get("account") or settings.ib_account,
+        base_currency=str(ib_config.get("base_currency", settings.ib_base_currency)),
+        market_data_type=int(ib_config.get("market_data_type", settings.ib_market_data_type)),
+        contract_overrides=_build_ib_contract_overrides(config),
+    )
+    strategies: list[ArbitrageStrategy] = []
     notional_brl = float(config.get("scanner", {}).get("default_notional_brl", 100000.0))
 
     for payload in strategy_block.get("adr_parity", []):
@@ -34,7 +58,8 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
                 adr_symbol=str(payload["adr_symbol"]),
                 local_name=str(payload["local_name"]),
                 shares_per_adr=float(payload["shares_per_adr"]),
-                yahoo=yahoo,
+                local_market=mt5,
+                adr_market=ib,
                 fx=fx,
                 costs=CostAssumptions.from_dict(payload.get("costs")),
                 open_threshold_bps=float(payload["open_threshold_bps"]),
@@ -42,6 +67,9 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
                 max_holding_bars=int(payload["max_holding_bars"]),
                 capital_required_brl=notional_brl,
                 mt5_symbol=payload.get("mt5_symbol"),
+                ib_symbol=payload.get("ib_symbol"),
+                local_market_symbol=payload.get("local_market_symbol"),
+                adr_market_symbol=payload.get("adr_market_symbol"),
             )
         )
 
@@ -52,15 +80,56 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
                 local_symbol=str(payload["local_symbol"]),
                 external_symbol=str(payload["external_symbol"]),
                 lookback=int(payload["lookback"]),
-                yahoo=yahoo,
+                local_market=mt5,
+                external_market=ib,
                 fx=fx,
                 costs=CostAssumptions.from_dict(payload.get("costs")),
                 open_threshold_bps=float(payload["open_threshold_bps"]),
                 close_threshold_bps=float(payload["close_threshold_bps"]),
                 max_holding_bars=int(payload["max_holding_bars"]),
                 capital_required_brl=notional_brl,
+                local_name=payload.get("local_name"),
+                external_name=payload.get("external_name"),
+                strategy_label=payload.get("label"),
+                local_market_symbol=payload.get("local_market_symbol"),
+                external_market_symbol=payload.get("external_market_symbol"),
+                external_currency=str(payload.get("external_currency", "USD")),
                 mt5_symbol=payload.get("mt5_symbol"),
+                ib_symbol=payload.get("ib_symbol"),
                 proxy_symbol=payload.get("proxy_symbol"),
+                local_order_quantity_multiplier=float(
+                    payload.get("local_order_quantity_multiplier", 1.0)
+                ),
+            )
+        )
+
+    for payload in strategy_block.get("cross_market", []):
+        strategies.append(
+            HedgeRatioBridgeStrategy(
+                strategy_id=str(payload["id"]),
+                local_symbol=str(payload["local_symbol"]),
+                external_symbol=str(payload["external_symbol"]),
+                lookback=int(payload["lookback"]),
+                local_market=mt5,
+                external_market=ib,
+                fx=fx,
+                costs=CostAssumptions.from_dict(payload.get("costs")),
+                open_threshold_bps=float(payload["open_threshold_bps"]),
+                close_threshold_bps=float(payload["close_threshold_bps"]),
+                max_holding_bars=int(payload["max_holding_bars"]),
+                capital_required_brl=notional_brl,
+                local_name=payload.get("local_name"),
+                external_name=payload.get("external_name"),
+                strategy_label=payload.get("label"),
+                local_market_symbol=payload.get("local_market_symbol"),
+                external_market_symbol=payload.get("external_market_symbol"),
+                external_currency=str(payload.get("external_currency", "USD")),
+                mt5_symbol=payload.get("mt5_symbol"),
+                ib_symbol=payload.get("ib_symbol"),
+                proxy_symbol=payload.get("proxy_symbol"),
+                local_order_quantity_multiplier=float(
+                    payload.get("local_order_quantity_multiplier", 1.0)
+                ),
             )
         )
 
@@ -85,3 +154,34 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
         )
 
     return strategies
+
+
+def _build_ib_contract_overrides(config: dict[str, Any]) -> dict[str, IBContractSpec]:
+    raw_contracts = config.get("brokers", {}).get("ib", {}).get("contracts", {})
+    if not isinstance(raw_contracts, dict):
+        raise ValueError("brokers.ib.contracts must be a mapping of symbol aliases to IB contract specs.")
+    return {
+        str(alias): IBContractSpec.from_dict(payload)
+        for alias, payload in raw_contracts.items()
+        if isinstance(payload, dict)
+    }
+
+
+def _build_mt5_symbol_aliases(strategy_block: dict[str, Any]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for payload in strategy_block.get("adr_parity", []):
+        local_symbol = payload.get("local_symbol")
+        mt5_symbol = payload.get("mt5_symbol")
+        if local_symbol and mt5_symbol:
+            aliases[str(local_symbol)] = str(mt5_symbol)
+    for payload in strategy_block.get("ewz_bova", []):
+        local_symbol = payload.get("local_symbol")
+        mt5_symbol = payload.get("mt5_symbol") or payload.get("proxy_symbol")
+        if local_symbol and mt5_symbol:
+            aliases[str(local_symbol)] = str(mt5_symbol)
+    for payload in strategy_block.get("cross_market", []):
+        local_symbol = payload.get("local_symbol")
+        mt5_symbol = payload.get("mt5_symbol") or payload.get("proxy_symbol")
+        if local_symbol and mt5_symbol:
+            aliases[str(local_symbol)] = str(mt5_symbol)
+    return aliases

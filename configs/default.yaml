@@ -13,11 +13,58 @@ paper:
   stop_loss_bps: 250.0
   take_profit_bps: 300.0
 
+brokers:
+  ib:
+    host: 127.0.0.1
+    port: 7497
+    client_id: 17
+    market_data_type: 1
+    base_currency: USD
+    contracts:
+      PBR:
+        symbol: PBR
+        sec_type: STK
+        exchange: SMART
+        currency: USD
+      VALE:
+        symbol: VALE
+        sec_type: STK
+        exchange: SMART
+        currency: USD
+      ITUB:
+        symbol: ITUB
+        sec_type: STK
+        exchange: SMART
+        currency: USD
+      BBD:
+        symbol: BBD
+        sec_type: STK
+        exchange: SMART
+        currency: USD
+      EWZ:
+        symbol: EWZ
+        sec_type: STK
+        exchange: SMART
+        currency: USD
+      BRENT_FRONT:
+        symbol: BRNT
+        sec_type: CONTFUT
+        exchange: ICEEU
+        currency: USD
+        what_to_show: TRADES
+      US10Y_FRONT:
+        symbol: ZN
+        sec_type: CONTFUT
+        exchange: CBOT
+        currency: USD
+        what_to_show: TRADES
+
 strategies:
   adr_parity:
-    - id: adr_petr4_pbra
+    - id: adr_petr4_pbr
       local_symbol: PETR4.SA
-      adr_symbol: PBR-A
+      adr_symbol: PBR
+      adr_market_symbol: PBR
       local_name: Petrobras PN
       shares_per_adr: 2.0
       open_threshold_bps: 80.0
@@ -30,9 +77,11 @@ strategies:
         borrow_bps: 12.0
         settlement_bps: 12.0
       mt5_symbol: PETR4
+      ib_symbol: PBR
     - id: adr_vale3_vale
       local_symbol: VALE3.SA
       adr_symbol: VALE
+      adr_market_symbol: VALE
       local_name: Vale ON
       shares_per_adr: 1.0
       open_threshold_bps: 65.0
@@ -45,9 +94,11 @@ strategies:
         borrow_bps: 10.0
         settlement_bps: 10.0
       mt5_symbol: VALE3
+      ib_symbol: VALE
     - id: adr_itub4_itub
       local_symbol: ITUB4.SA
       adr_symbol: ITUB
+      adr_market_symbol: ITUB
       local_name: Itau PN
       shares_per_adr: 1.0
       open_threshold_bps: 60.0
@@ -60,9 +111,11 @@ strategies:
         borrow_bps: 10.0
         settlement_bps: 10.0
       mt5_symbol: ITUB4
+      ib_symbol: ITUB
     - id: adr_bbdc4_bbd
       local_symbol: BBDC4.SA
       adr_symbol: BBD
+      adr_market_symbol: BBD
       local_name: Bradesco PN
       shares_per_adr: 1.0
       open_threshold_bps: 60.0
@@ -75,11 +128,14 @@ strategies:
         borrow_bps: 11.0
         settlement_bps: 10.0
       mt5_symbol: BBDC4
+      ib_symbol: BBD
 
   ewz_bova:
     - id: ewz_bova11_bridge
+      label: "EWZ bridge: EWZ -> BOVA11"
       local_symbol: BOVA11.SA
       external_symbol: EWZ
+      external_market_symbol: EWZ
       lookback: 60
       open_threshold_bps: 70.0
       close_threshold_bps: 20.0
@@ -91,6 +147,48 @@ strategies:
         tracking_bps: 15.0
       mt5_symbol: BOVA11
       proxy_symbol: WIN$N
+      ib_symbol: EWZ
+
+  cross_market:
+    # Continuous futures below are safe default scanners.
+    # If you want live IB execution on these strategies, replace the IB market symbol
+    # with a concrete front-month contract alias and set ib_symbol explicitly.
+    - id: oil_brent_wdo_bridge
+      label: "Oil bridge: Brent -> WDO"
+      local_symbol: WDO
+      local_name: Mini USD futures
+      external_symbol: BRENT_FRONT
+      external_name: Brent crude front future
+      external_market_symbol: BRENT_FRONT
+      lookback: 40
+      open_threshold_bps: 85.0
+      close_threshold_bps: 25.0
+      max_holding_bars: 4
+      costs:
+        exchange_fee_bps: 10.0
+        fx_bps: 8.0
+        slippage_bps: 18.0
+        tracking_bps: 18.0
+      mt5_symbol: WDO$N
+      external_currency: USD
+    - id: rates_us_treasury_di_bridge
+      label: "Rates bridge: US Treasuries -> DI futures"
+      local_symbol: DI1
+      local_name: DI futures
+      external_symbol: US10Y_FRONT
+      external_name: US 10Y Treasury front future
+      external_market_symbol: US10Y_FRONT
+      lookback: 50
+      open_threshold_bps: 90.0
+      close_threshold_bps: 30.0
+      max_holding_bars: 5
+      costs:
+        exchange_fee_bps: 10.0
+        fx_bps: 8.0
+        slippage_bps: 18.0
+        tracking_bps: 20.0
+      mt5_symbol: DI1$N
+      external_currency: USD
 
   crypto_implied_fx:
     - id: crypto_btcbrl_basis
