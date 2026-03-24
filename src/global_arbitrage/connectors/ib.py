@@ -192,6 +192,15 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self._tickers.pop(alias, None)
 
     def latest_quote(self, symbol: str, *, currency: str | None = None) -> MarketQuote:
+        try:
+            return self._latest_quote_once(symbol, currency=currency)
+        except Exception as exc:
+            if not self._should_reconnect_after_error(exc):
+                raise
+            self.disconnect()
+            return self._latest_quote_once(symbol, currency=currency)
+
+    def _latest_quote_once(self, symbol: str, *, currency: str | None = None) -> MarketQuote:
         ib = self._require_ib()
         contract = self._qualify_contract(symbol)
         ticker = self._request_streaming_ticker(symbol, contract)
@@ -227,6 +236,22 @@ class InteractiveBrokersConnector(MarketDataConnector):
         )
 
     def history(
+        self,
+        symbol: str,
+        *,
+        period: str = "2y",
+        interval: str = "1d",
+        currency: str | None = None,
+    ) -> pd.DataFrame:
+        try:
+            return self._history_once(symbol, period=period, interval=interval, currency=currency)
+        except Exception as exc:
+            if not self._should_reconnect_after_error(exc):
+                raise
+            self.disconnect()
+            return self._history_once(symbol, period=period, interval=interval, currency=currency)
+
+    def _history_once(
         self,
         symbol: str,
         *,
@@ -460,6 +485,19 @@ class InteractiveBrokersConnector(MarketDataConnector):
                 continue
             return float(value)
         return None
+
+    @staticmethod
+    def _should_reconnect_after_error(exc: Exception) -> bool:
+        message = f"{type(exc).__name__}: {exc}".lower()
+        return any(
+            token in message
+            for token in (
+                "socket disconnect",
+                "peer closed connection",
+                "not connected",
+                "api connection failed",
+            )
+        )
 
     @staticmethod
     def _import_ib_async():
