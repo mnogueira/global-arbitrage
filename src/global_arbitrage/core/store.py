@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,16 @@ from global_arbitrage.core.models import StrategyObservation
 class OpportunityStore:
     """Persist observations and trade events for later analysis."""
 
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        connect_retries: int = 5,
+        retry_wait_seconds: float = 0.25,
+    ):
         self.path = Path(path)
+        self.connect_retries = max(1, int(connect_retries))
+        self.retry_wait_seconds = max(0.0, float(retry_wait_seconds))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
@@ -24,7 +33,7 @@ class OpportunityStore:
         """Write one observation row into DuckDB."""
 
         record = observation.to_record()
-        with duckdb.connect(str(self.path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO observations (
@@ -65,7 +74,7 @@ class OpportunityStore:
     def append_trade_event(self, payload: dict[str, Any]) -> None:
         """Write one paper-trade event row into DuckDB."""
 
-        with duckdb.connect(str(self.path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO trades (
@@ -96,7 +105,7 @@ class OpportunityStore:
     def recent_observations(self, limit: int = 25) -> pd.DataFrame:
         """Return the most recent observations."""
 
-        with duckdb.connect(str(self.path)) as conn:
+        with self._connect() as conn:
             return conn.execute(
                 """
                 SELECT *
@@ -110,7 +119,7 @@ class OpportunityStore:
     def recent_trades(self, limit: int = 25) -> pd.DataFrame:
         """Return the most recent trade events."""
 
-        with duckdb.connect(str(self.path)) as conn:
+        with self._connect() as conn:
             return conn.execute(
                 """
                 SELECT *
@@ -122,7 +131,7 @@ class OpportunityStore:
             ).fetchdf()
 
     def _ensure_schema(self) -> None:
-        with duckdb.connect(str(self.path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS observations (
@@ -158,3 +167,18 @@ class OpportunityStore:
                 )
                 """
             )
+
+    def _connect(self):
+        last_error: duckdb.IOException | None = None
+        for attempt in range(self.connect_retries):
+            try:
+                return duckdb.connect(str(self.path))
+            except duckdb.IOException as exc:
+                last_error = exc
+                if attempt + 1 >= self.connect_retries:
+                    raise
+                if self.retry_wait_seconds > 0.0:
+                    time.sleep(self.retry_wait_seconds)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"Could not open DuckDB database at '{self.path}'.")

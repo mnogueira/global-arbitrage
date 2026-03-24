@@ -117,7 +117,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         *,
         host: str = "127.0.0.1",
         port: int = 4002,
-        client_id: int = 2,
+        client_id: int = 101,
         timeout: float = 4.0,
         readonly: bool = False,
         account: str | None = None,
