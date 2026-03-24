@@ -47,9 +47,9 @@ brokers:
         exchange: SMART
         currency: USD
       BRENT_FRONT:
-        symbol: BRNT
+        symbol: BZ
         sec_type: CONTFUT
-        exchange: ICEEU
+        exchange: NYMEX
         currency: USD
         what_to_show: TRADES
       US10Y_FRONT:

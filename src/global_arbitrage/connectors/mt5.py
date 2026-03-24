@@ -129,8 +129,8 @@ class MT5Connector(MarketDataConnector):
             recent_bar_close, recent_bar_timestamp = self._recent_bar_snapshot(resolved_symbol)
             last = _first_positive_price(
                 None if tick is None else getattr(tick, "last", None),
-                midpoint,
                 None if info is None else getattr(info, "last", None),
+                midpoint,
                 recent_bar_close,
             )
             if last is not None:

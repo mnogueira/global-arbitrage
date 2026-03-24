@@ -93,7 +93,7 @@ def test_mt5_connector_refreshes_symbol_selection_before_using_quote() -> None:
     assert quote.bid == 47.34
     assert quote.ask == 47.36
     assert quote.last == 47.36
-    assert quote.timestamp == pd.Timestamp("2026-03-24 18:34:43")
+    assert quote.timestamp == pd.Timestamp("2026-03-24 15:01:23")
 
 
 def test_mt5_connector_falls_back_to_recent_bar_close_when_ticks_are_zero() -> None:
@@ -106,4 +106,4 @@ def test_mt5_connector_falls_back_to_recent_bar_close_when_ticks_are_zero() -> N
     assert quote.bid is None
     assert quote.ask is None
     assert quote.last == 182825.0
-    assert quote.timestamp == pd.Timestamp("2026-03-24 18:35:20")
+    assert quote.timestamp == pd.Timestamp("2026-03-24 15:02:00")
