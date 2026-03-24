@@ -1,0 +1,5 @@
+from global_arbitrage.cli.backtest import main
+
+
+if __name__ == "__main__":
+    main()

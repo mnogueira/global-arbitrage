@@ -1,0 +1,110 @@
+store:
+  path: storage/opportunities.duckdb
+  alerts_root: storage/runtime
+
+scanner:
+  alert_threshold_bps: 35.0
+  default_notional_brl: 100000.0
+
+paper:
+  initial_equity_brl: 250000.0
+  risk_fraction: 0.20
+  max_drawdown: 0.15
+  stop_loss_bps: 250.0
+  take_profit_bps: 300.0
+
+strategies:
+  adr_parity:
+    - id: adr_petr4_pbra
+      local_symbol: PETR4.SA
+      adr_symbol: PBR-A
+      local_name: Petrobras PN
+      shares_per_adr: 2.0
+      open_threshold_bps: 80.0
+      close_threshold_bps: 20.0
+      max_holding_bars: 10
+      costs:
+        exchange_fee_bps: 8.0
+        fx_bps: 10.0
+        slippage_bps: 8.0
+        borrow_bps: 12.0
+        settlement_bps: 12.0
+      mt5_symbol: PETR4
+    - id: adr_vale3_vale
+      local_symbol: VALE3.SA
+      adr_symbol: VALE
+      local_name: Vale ON
+      shares_per_adr: 1.0
+      open_threshold_bps: 65.0
+      close_threshold_bps: 15.0
+      max_holding_bars: 10
+      costs:
+        exchange_fee_bps: 8.0
+        fx_bps: 10.0
+        slippage_bps: 7.0
+        borrow_bps: 10.0
+        settlement_bps: 10.0
+      mt5_symbol: VALE3
+    - id: adr_itub4_itub
+      local_symbol: ITUB4.SA
+      adr_symbol: ITUB
+      local_name: Itau PN
+      shares_per_adr: 1.0
+      open_threshold_bps: 60.0
+      close_threshold_bps: 15.0
+      max_holding_bars: 10
+      costs:
+        exchange_fee_bps: 8.0
+        fx_bps: 10.0
+        slippage_bps: 8.0
+        borrow_bps: 10.0
+        settlement_bps: 10.0
+      mt5_symbol: ITUB4
+    - id: adr_bbdc4_bbd
+      local_symbol: BBDC4.SA
+      adr_symbol: BBD
+      local_name: Bradesco PN
+      shares_per_adr: 1.0
+      open_threshold_bps: 60.0
+      close_threshold_bps: 15.0
+      max_holding_bars: 10
+      costs:
+        exchange_fee_bps: 8.0
+        fx_bps: 10.0
+        slippage_bps: 8.0
+        borrow_bps: 11.0
+        settlement_bps: 10.0
+      mt5_symbol: BBDC4
+
+  ewz_bova:
+    - id: ewz_bova11_bridge
+      local_symbol: BOVA11.SA
+      external_symbol: EWZ
+      lookback: 60
+      open_threshold_bps: 70.0
+      close_threshold_bps: 20.0
+      max_holding_bars: 5
+      costs:
+        exchange_fee_bps: 6.0
+        fx_bps: 8.0
+        slippage_bps: 12.0
+        tracking_bps: 15.0
+      mt5_symbol: BOVA11
+      proxy_symbol: WIN$N
+
+  crypto_implied_fx:
+    - id: crypto_btcbrl_basis
+      local_symbol: BTCBRL
+      usd_symbol: BTCUSDT
+      open_threshold_bps: 90.0
+      close_threshold_bps: 25.0
+      max_holding_bars: 12
+      costs:
+        exchange_fee_bps: 15.0
+        fx_bps: 15.0
+        slippage_bps: 20.0
+        transfer_bps: 25.0
+      bitso_books:
+        - btc_mxn
+        - btc_ars
+      mt5_symbol:
