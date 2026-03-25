@@ -26,6 +26,20 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
     strategy_block = config.get("strategies", {})
     ib_config = config.get("brokers", {}).get("ib", {})
     mt5_config = config.get("brokers", {}).get("mt5", {})
+    ib_client_id = int(ib_config.get("client_id", settings.ib_client_id))
+    ib_data_port = int(ib_config.get("data_port", ib_config.get("port", settings.ib_data_port)))
+    ib_execution_port = int(
+        ib_config.get("execution_port", ib_config.get("port", settings.ib_execution_port))
+    )
+    raw_ib_data_client_id = ib_config.get("data_client_id", settings.ib_data_client_id)
+    ib_data_client_id = None if raw_ib_data_client_id is None else int(raw_ib_data_client_id)
+    raw_ib_execution_client_id = ib_config.get(
+        "execution_client_id",
+        settings.ib_execution_client_id,
+    )
+    ib_execution_client_id = (
+        None if raw_ib_execution_client_id is None else int(raw_ib_execution_client_id)
+    )
     mt5 = MT5Connector(
         login=settings.mt5_login,
         password=settings.mt5_password,
@@ -35,8 +49,12 @@ def build_strategies(config: dict[str, Any]) -> list[ArbitrageStrategy]:
     )
     ib = InteractiveBrokersConnector(
         host=str(ib_config.get("host", settings.ib_host)),
-        port=int(ib_config.get("port", settings.ib_port)),
-        client_id=int(ib_config.get("client_id", settings.ib_client_id)),
+        port=ib_data_port,
+        data_port=ib_data_port,
+        execution_port=ib_execution_port,
+        client_id=ib_client_id,
+        data_client_id=ib_data_client_id,
+        execution_client_id=ib_execution_client_id,
         timeout=float(ib_config.get("timeout_seconds", settings.ib_timeout_seconds)),
         readonly=bool(ib_config.get("readonly", settings.ib_readonly)),
         account=ib_config.get("account") or settings.ib_account,

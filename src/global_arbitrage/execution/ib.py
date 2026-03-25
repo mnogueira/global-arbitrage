@@ -6,4 +6,7 @@ from global_arbitrage.connectors.ib import InteractiveBrokersConnector
 
 
 class IBExecutionBroker(InteractiveBrokersConnector):
-    """Thin alias that keeps execution imports parallel with MT5."""
+    """IB execution broker that eagerly opens only the execution session."""
+
+    def connect(self) -> None:
+        self.connect_execution()

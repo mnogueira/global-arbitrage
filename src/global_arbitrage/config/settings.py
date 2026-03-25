@@ -22,19 +22,17 @@ class Settings(BaseSettings):
     mt5_magic_number: int = 431000
     mt5_deviation: int = 20
     ib_host: str = "127.0.0.1"
-    ib_port: int = 4002
+    ib_port: int = 4001
+    ib_data_port: int = 4001
+    ib_execution_port: int = 4002
     ib_client_id: int = 101
-    ib_account: str | None = None
+    ib_data_client_id: int | None = None
+    ib_execution_client_id: int | None = None
+    ib_account: str | None = "DUP391965"
     ib_readonly: bool = False
     ib_timeout_seconds: float = 4.0
     ib_market_data_type: int = 1
     ib_base_currency: str = "USD"
-    ib_host: str = "127.0.0.1"
-    ib_port: int = 4002
-    ib_client_id: int = 101
-    ib_account: str | None = "DUP391965"
-    ib_readonly: bool = False
-    ib_market_data_type: int = 1
 
 
 def load_yaml_config(path: str | Path) -> dict[str, Any]:

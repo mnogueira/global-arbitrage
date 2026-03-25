@@ -108,7 +108,7 @@ class IBContractSpec:
 
 
 class InteractiveBrokersConnector(MarketDataConnector):
-    """Unified IB market data, history, execution, and account connector."""
+    """IB connector with isolated market-data and execution sessions."""
 
     venue = "ib"
 
@@ -116,8 +116,12 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self,
         *,
         host: str = "127.0.0.1",
-        port: int = 4002,
+        port: int = 4001,
+        data_port: int | None = None,
+        execution_port: int | None = None,
         client_id: int = 101,
+        data_client_id: int | None = None,
+        execution_client_id: int | None = None,
         timeout: float = 4.0,
         readonly: bool = False,
         account: str | None = None,
@@ -129,8 +133,15 @@ class InteractiveBrokersConnector(MarketDataConnector):
         contract_overrides: dict[str, IBContractSpec] | None = None,
     ):
         self.host = host
-        self.port = port
+        self.data_port = int(port if data_port is None else data_port)
+        self.execution_port = int(self.data_port if execution_port is None else execution_port)
+        self.port = self.data_port
         self.client_id = client_id
+        self.data_client_id = int(client_id if data_client_id is None else data_client_id)
+        default_execution_client_id = client_id if self.execution_port != self.data_port else client_id + 1
+        self.execution_client_id = int(
+            default_execution_client_id if execution_client_id is None else execution_client_id
+        )
         self.timeout = timeout
         self.readonly = readonly
         self.account = account
@@ -141,32 +152,78 @@ class InteractiveBrokersConnector(MarketDataConnector):
         self.client_id_retry_span = max(1, int(client_id_retry_span))
         self.contract_overrides = dict(contract_overrides or {})
         self._module: Any | None = None
-        self._ib: Any | None = None
+        self._data_ib: Any | None = None
+        self._execution_ib: Any | None = None
         self._contracts: dict[str, Any] = {}
         self._tickers: dict[str, Any] = {}
         self._effective_market_data_type = market_data_type
-        self._active_client_id = client_id
+        self._active_data_client_id = self.data_client_id
+        self._active_execution_client_id = self.execution_client_id
 
     def connect(self) -> None:
+        self.connect_market_data()
+
+    def connect_market_data(self) -> None:
         module = self._require_module()
+        if self._data_ib is not None:
+            return
         last_error: Exception | None = None
         for offset in range(self.client_id_retry_span):
             ib = module.IB()
-            candidate_client_id = self.client_id + offset
+            candidate_client_id = self.data_client_id + offset
             try:
-                ib.connect(
+                # Use the low-level handshake so the live data session never
+                # auto-requests positions, account updates, or open orders.
+                ib.wrapper.clientId = candidate_client_id
+                ib.client.connect(
                     self.host,
-                    self.port,
+                    self.data_port,
                     clientId=candidate_client_id,
                     timeout=self.timeout,
-                    readonly=self.readonly,
-                    account=self.account or "",
                 )
                 self._effective_market_data_type = self.market_data_type
                 if self._effective_market_data_type:
                     ib.reqMarketDataType(self._effective_market_data_type)
-                self._active_client_id = candidate_client_id
-                self._ib = ib
+                self._active_data_client_id = candidate_client_id
+                self._data_ib = ib
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    ib.disconnect()
+                except Exception:
+                    pass
+        if last_error is not None:
+            raise last_error
+
+    def connect_execution(self) -> None:
+        module = self._require_module()
+        if self._execution_ib is not None:
+            return
+        fetch_fields = None
+        startup_fetch = getattr(module, "StartupFetch", None)
+        if startup_fetch is not None:
+            fetch_fields = startup_fetch.POSITIONS | startup_fetch.ORDERS_OPEN
+        last_error: Exception | None = None
+        for offset in range(self.client_id_retry_span):
+            ib = module.IB()
+            candidate_client_id = self.execution_client_id + offset
+            try:
+                connect_kwargs = {
+                    "clientId": candidate_client_id,
+                    "timeout": self.timeout,
+                    "readonly": self.readonly,
+                    "account": self.account or "",
+                }
+                if fetch_fields is not None:
+                    connect_kwargs["fetchFields"] = fetch_fields
+                ib.connect(
+                    self.host,
+                    self.execution_port,
+                    **connect_kwargs,
+                )
+                self._active_execution_client_id = candidate_client_id
+                self._execution_ib = ib
                 return
             except Exception as exc:
                 last_error = exc
@@ -178,13 +235,23 @@ class InteractiveBrokersConnector(MarketDataConnector):
             raise last_error
 
     def disconnect(self) -> None:
-        if self._ib is not None:
-            self._ib.disconnect()
-        self._ib = None
+        self._disconnect_execution_session()
+        self._disconnect_data_session()
+
+    def _disconnect_data_session(self) -> None:
+        if self._data_ib is not None:
+            self._data_ib.disconnect()
+        self._data_ib = None
         self._contracts.clear()
         self._tickers.clear()
         self._effective_market_data_type = self.market_data_type
-        self._active_client_id = self.client_id
+        self._active_data_client_id = self.data_client_id
+
+    def _disconnect_execution_session(self) -> None:
+        if self._execution_ib is not None:
+            self._execution_ib.disconnect()
+        self._execution_ib = None
+        self._active_execution_client_id = self.execution_client_id
 
     def register_contract(self, alias: str, spec: IBContractSpec) -> None:
         self.contract_overrides[alias] = spec
@@ -197,20 +264,19 @@ class InteractiveBrokersConnector(MarketDataConnector):
         except Exception as exc:
             if not self._should_reconnect_after_error(exc):
                 raise
-            self.disconnect()
+            self._disconnect_data_session()
             return self._latest_quote_once(symbol, currency=currency)
 
     def _latest_quote_once(self, symbol: str, *, currency: str | None = None) -> MarketQuote:
-        ib = self._require_ib()
+        ib = self._require_data_ib()
         contract = self._qualify_contract(symbol)
         ticker = self._request_streaming_ticker(symbol, contract)
         if not self._ticker_has_price(ticker) and self._enable_delayed_market_data():
             ticker = self._request_streaming_ticker(symbol, contract, force_refresh=True)
         if not self._ticker_has_price(ticker):
-            snapshots = ib.reqTickers(contract)
-            if snapshots:
-                ticker = snapshots[0]
-                self._tickers[symbol] = ticker
+            ticker = ib.reqMktData(contract, "", True, False)
+            if self.quote_wait_seconds > 0.0:
+                ib.sleep(self.quote_wait_seconds)
         bid = self._safe_float(getattr(ticker, "bid", None))
         ask = self._safe_float(getattr(ticker, "ask", None))
         last = self._resolve_market_price(ticker)
@@ -232,6 +298,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
                 "contract_exchange": str(getattr(contract, "exchange", "")),
                 "requested_market_data_type": self.market_data_type,
                 "market_data_type": self._effective_market_data_type,
+                "port": self.data_port,
             },
         )
 
@@ -248,7 +315,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         except Exception as exc:
             if not self._should_reconnect_after_error(exc):
                 raise
-            self.disconnect()
+            self._disconnect_data_session()
             return self._history_once(symbol, period=period, interval=interval, currency=currency)
 
     def _history_once(
@@ -259,7 +326,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         interval: str = "1d",
         currency: str | None = None,
     ) -> pd.DataFrame:
-        ib = self._require_ib()
+        ib = self._require_data_ib()
         module = self._require_module()
         contract = self._qualify_contract(symbol)
         spec = self._resolve_spec(symbol, currency)
@@ -287,7 +354,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         return normalized
 
     def submit_market_order(self, *, symbol: str, side: OrderSide, quantity: float) -> OrderReceipt:
-        ib = self._require_ib()
+        ib = self._require_execution_ib()
         module = self._require_module()
         contract = self._qualify_contract(symbol)
         order = module.MarketOrder(side.value, float(quantity))
@@ -308,33 +375,39 @@ class InteractiveBrokersConnector(MarketDataConnector):
             order_id=None if order_id is None else str(order_id),
             filled_price=filled_price,
             message=str(getattr(order_status, "status", "")),
-            metadata={"contract_exchange": str(getattr(contract, "exchange", ""))},
+            metadata={
+                "contract_exchange": str(getattr(contract, "exchange", "")),
+                "port": self.execution_port,
+            },
         )
 
     def positions(self) -> list[BrokerPosition]:
-        ib = self._require_ib()
-        account = self._resolve_account()
-        portfolio_items = ib.portfolio(account or "")
+        ib = self._require_execution_ib()
         positions: list[BrokerPosition] = []
-        for item in portfolio_items:
+        for item in ib.positions():
+            contract = getattr(item, "contract", None)
+            symbol = getattr(contract, "symbol", None)
+            quantity = self._safe_float(getattr(item, "position", None))
+            if symbol is None or quantity is None:
+                continue
             positions.append(
                 BrokerPosition(
                     venue=self.venue,
-                    symbol=str(item.contract.symbol),
-                    quantity=float(item.position),
-                    currency=str(getattr(item.contract, "currency", "USD")),
-                    average_price=self._safe_float(getattr(item, "averageCost", None)),
-                    market_price=self._safe_float(getattr(item, "marketPrice", None)),
-                    market_value=self._safe_float(getattr(item, "marketValue", None)),
-                    unrealized_pnl=self._safe_float(getattr(item, "unrealizedPNL", None)),
-                    realized_pnl=self._safe_float(getattr(item, "realizedPNL", None)),
-                    metadata={"exchange": str(getattr(item.contract, "exchange", ""))},
+                    symbol=str(symbol),
+                    quantity=float(quantity),
+                    currency=str(getattr(contract, "currency", "USD")),
+                    average_price=self._safe_float(getattr(item, "avgCost", None)),
+                    metadata={
+                        "account": str(getattr(item, "account", "")),
+                        "exchange": str(getattr(contract, "exchange", "")),
+                        "port": self.execution_port,
+                    },
                 )
             )
         return positions
 
     def account_snapshot(self) -> BrokerAccountSnapshot:
-        ib = self._require_ib()
+        ib = self._require_execution_ib()
         account = self._resolve_account()
         summary_items = ib.accountSummary(account or "")
         summary = {
@@ -352,18 +425,21 @@ class InteractiveBrokersConnector(MarketDataConnector):
             buying_power=self._summary_value(summary, "BuyingPower", "BASE"),
             unrealized_pnl=self._summary_value(summary, "UnrealizedPnL", "BASE"),
             realized_pnl=self._summary_value(summary, "RealizedPnL", "BASE"),
-            metadata={"tags": {f"{tag}:{ccy}": value for (tag, ccy), value in summary.items()}},
+            metadata={
+                "port": self.execution_port,
+                "tags": {f"{tag}:{ccy}": value for (tag, ccy), value in summary.items()},
+            },
         )
 
     def _resolve_account(self) -> str | None:
         if self.account:
             return self.account
-        ib = self._require_ib()
-        accounts = ib.managedAccounts()
+        ib = self._require_execution_ib()
+        accounts = ib.client.getAccounts()
         return None if not accounts else str(accounts[0])
 
     def _request_streaming_ticker(self, symbol: str, contract: Any, *, force_refresh: bool = False):
-        ib = self._require_ib()
+        ib = self._require_data_ib()
         ticker = None if force_refresh else self._tickers.get(symbol)
         if ticker is None:
             ticker = ib.reqMktData(contract, "", False, False)
@@ -375,7 +451,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
     def _enable_delayed_market_data(self) -> bool:
         if self._effective_market_data_type in {3, 4}:
             return False
-        ib = self._require_ib()
+        ib = self._require_data_ib()
         ib.reqMarketDataType(3)
         self._effective_market_data_type = 3
         self._tickers.clear()
@@ -385,7 +461,7 @@ class InteractiveBrokersConnector(MarketDataConnector):
         cached = self._contracts.get(symbol)
         if cached is not None:
             return cached
-        ib = self._require_ib()
+        ib = self._require_data_ib()
         module = self._require_module()
         spec = self._resolve_spec(symbol)
         contract = module.Contract(
@@ -414,12 +490,19 @@ class InteractiveBrokersConnector(MarketDataConnector):
             return spec
         return IBContractSpec(symbol=symbol, currency=currency or "USD")
 
-    def _require_ib(self):
-        if self._ib is None:
-            self.connect()
-        if self._ib is None:
-            raise RuntimeError("IB connector could not establish a session.")
-        return self._ib
+    def _require_data_ib(self):
+        if self._data_ib is None:
+            self.connect_market_data()
+        if self._data_ib is None:
+            raise RuntimeError("IB connector could not establish a market data session.")
+        return self._data_ib
+
+    def _require_execution_ib(self):
+        if self._execution_ib is None:
+            self.connect_execution()
+        if self._execution_ib is None:
+            raise RuntimeError("IB connector could not establish an execution session.")
+        return self._execution_ib
 
     def _require_module(self):
         if self._module is None:
